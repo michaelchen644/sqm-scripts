@@ -1,0 +1,1 @@
+HW-accelerated traffic shaping support by using nsstbf. Include nssprio nsspfifo nssred nssfq_codel. You need to select fq_codel as discipline.
