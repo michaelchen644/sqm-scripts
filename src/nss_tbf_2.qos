@@ -95,41 +95,33 @@ egress() {
 
     MTU=$(get_mtu ${IFACE})
 
-    BURST="$(get_burst ${MTU:-1514} ${UPLINK} ${ESHAPER_BURST_DUR_US})"
+    BURSTE="$(get_burst ${MTU:-1514} ${UPLINK} ${ESHAPER_BURST_DUR_US})"
 
-    BURST=${BURST:-1514}
+    BURSTE=${BURSTE:-1514}
 
-    UPLINK100=`expr ${UPLINK} / 10`
+    UPLINK100=`expr ${UPLINK} / 1000 \* 5`
 
-    UPLINK200=`expr ${UPLINK} / 10 \* 4`
+    UPLINK200=`expr ${UPLINK} / 100 \* 5`
 
-    BURST100=`expr ${BURST} / 10`
+    BURSTE100="$(get_burst ${MTU:-1514} ${UPLINK100} ${ESHAPER_BURST_DUR_US})"
 
-    if [ ${BURST100} -lt 1514 ]; then
-      
-      BURST100=1514
-      
-    fi
+    BURSTE100=${BURSTE100:-1514}
 
-    BURST200=`expr ${BURST} / 10 \* 3`
+    BURSTE200="$(get_burst ${MTU:-1514} ${UPLINK200} ${ESHAPER_BURST_DUR_US})"
 
-    if [ ${BURST200} -lt 1514 ]; then
-      
-      BURST200=1514
-      
-    fi
+    BURSTE200=${BURSTE200:-1514}
 
-    ${TC} qdisc add dev ${IFACE} root handle 1: nsstbl rate ${UPLINK}kbit burst ${BURST} mtu ${MTU} accel_mode 0
+    ${TC} qdisc add dev ${IFACE} root handle 1: nsstbl rate ${UPLINK}kbit burst ${BURSTE} mtu ${MTU} accel_mode 0
 
     #${TC} qdisc add dev ${IFACE} parent 1: handle 10: nssfq_codel `get_limit ${ELIMIT}` `get_flows ${UPLINK}` `get_target "${ETARGET}" ${UPLINK}` quantum 1514 set_default accel_mode 0
 
     ${TC} qdisc add dev ${IFACE} parent 1: handle 10: nssprio bands 3 accel_mode 0
 
-    ${TC} qdisc add dev ${IFACE} parent 10:1 handle 100: nsstbl rate ${UPLINK100}kbit burst ${BURST100} accel_mode 0
+    ${TC} qdisc add dev ${IFACE} parent 10:1 handle 100: nsstbl rate ${UPLINK100}kbit burst ${BURSTE100} accel_mode 0
 
     ${TC} qdisc add dev ${IFACE} parent 100: handle 1000: nsspfifo limit 100 accel_mode 0
 
-    ${TC} qdisc add dev ${IFACE} parent 10:2 handle 200: nsstbl rate ${UPLINK200}kbit burst ${BURST200} accel_mode 0
+    ${TC} qdisc add dev ${IFACE} parent 10:2 handle 200: nsstbl rate ${UPLINK200}kbit burst ${BURSTE200} accel_mode 0
 
     ${TC} qdisc add dev ${IFACE} parent 200: handle 2000: nssred limit 100k min 30k max 80k avpkt 1k burst 55 `get_rightecn ${EECN}` probability 0.50 accel_mode 0
 
@@ -171,29 +163,21 @@ ingress() {
 
     MTU=$(get_mtu $IFACE)
 
-    BURST="$(get_burst ${MTU:-1514} ${DOWNLINK} ${ISHAPER_BURST_DUR_US})"
+    BURSTI="$(get_burst ${MTU:-1514} ${DOWNLINK} ${ISHAPER_BURST_DUR_US})"
 
-    BURST=${BURST:-1514}
+    BURSTI=${BURSTI:-1514}
 
-    DOWNLINK100=`expr ${DOWNLINK} / 10`
+    DOWNLINK100=`expr ${DOWNLINK} / 1000 \* 5`
 
-    DOWNLINK200=`expr ${DOWNLINK} / 10 \* 4`
+    DOWNLINK200=`expr ${DOWNLINK} / 100 \* 5`
 
-    BURST100=`expr ${BURST} / 10`
+    BURSTI100="$(get_burst ${MTU:-1514} ${DOWNLINK100} ${ISHAPER_BURST_DUR_US})"
 
-    if [ ${BURST100} -lt 1514 ]; then
-      
-      BURST100=1514
-      
-    fi
+    BURSTI100=${BURSTI100:-1514}
 
-    BURST200=`expr ${BURST} / 10 \* 3`
+    BURSTI200="$(get_burst ${MTU:-1514} ${DOWNLINK200} ${ISHAPER_BURST_DUR_US})"
 
-    if [ ${BURST200} -lt 1514 ]; then
-      
-      BURST200=1514
-      
-    fi
+    BURSTI200=${BURSTI200:-1514}
 
     ${IP} link add name ${DEV} type ifb
 
@@ -203,17 +187,17 @@ ingress() {
 
     ${TC} filter add dev ${IFACE} parent ffff: protocol all u32 match u32 0 0 action nssmirred redirect dev ${DEV} fromdev ${IFACE}
 
-    ${TC} qdisc add dev ${DEV} root handle 1: nsstbl rate ${DOWNLINK}kbit burst ${BURST} mtu ${MTU} accel_mode 0
+    ${TC} qdisc add dev ${DEV} root handle 1: nsstbl rate ${DOWNLINK}kbit burst ${BURSTI} mtu ${MTU} accel_mode 0
 
     #${TC} qdisc add dev ${DEV} parent 1: handle 10: nssfq_codel `get_limit ${ILIMIT}` `get_flows ${DOWNLINK}` `get_target "${ITARGET}" ${DOWNLINK}` quantum 1514 set_default accel_mode 0
 
     ${TC} qdisc add dev  ${DEV} parent 1: handle 10: nssprio bands 3 accel_mode 0
 
-    ${TC} qdisc add dev  ${DEV} parent 10:1 handle 100: nsstbl rate ${DOWNLINK100}kbit burst ${BURST100} accel_mode 0
+    ${TC} qdisc add dev  ${DEV} parent 10:1 handle 100: nsstbl rate ${DOWNLINK100}kbit burst ${BURSTI100} accel_mode 0
 
     ${TC} qdisc add dev  ${DEV} parent 100: handle 1000: nsspfifo limit 100 accel_mode 0
 
-    ${TC} qdisc add dev  ${DEV} parent 10:2 handle 200: nsstbl rate ${DOWNLINK200}kbit burst ${BURST200} accel_mode 0
+    ${TC} qdisc add dev  ${DEV} parent 10:2 handle 200: nsstbl rate ${DOWNLINK200}kbit burst ${BURSTI200} accel_mode 0
 
     ${TC} qdisc add dev  ${DEV} parent 200: handle 2000: nssred limit 100k min 30k max 80k avpkt 1k burst 55 `get_rightecn ${IECN}` probability 0.50 accel_mode 0
 
