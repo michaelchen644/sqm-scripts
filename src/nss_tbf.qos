@@ -8,8 +8,8 @@
 # it under the terms of the GNU General Public License version 2 as
 # published by the Free Software Foundation.
 #
-#  Copyright (C) 2020 Richard Schneidt
-#  
+#	Copyright (C) 2020 Richard Schneidt
+#	
 #
 ################################################################################
 
@@ -19,254 +19,342 @@
 
 DEV=ifb-nss
 
-get_rightecn() {
+drop_egress_qdisc() {
+	
+	if [ "$(tc qdisc show dev ${IFACE} root 2>&1 | awk -F':| ' 'NR==1{print $3}')" != "0" ]; then
+		
+		tc qdisc list dev ${IFACE} 2>&1 | grep -v ingress | awk '$1=="qdisc"&&$4=="parent"{print $5}' | sort -t: -k1nr,2nr | while read -r parent; do
+			
+			${TC} qdisc del dev ${IFACE} parent ${parent}
+			
+		done
+		
+		${TC} qdisc del dev ${IFACE} root
+		
+	fi
+	
+	return 0
+	
+}
 
-    CURECN=$1
+drop_ingress_qdisc() {	
+	
+	if [ -n "$(tc filter show dev ${IFACE} parent ffff: 2>&1 | awk -F':| ' 'NR==1{print $1}')" ]; then
+		
+		${TC} filter del dev ${IFACE} parent ffff:
+		
+	fi
+	
+	if [ "$(ip link show ${DEV} 2>&1 | awk -F':| ' 'NR==1{print $4$5}')" != "notexist." ]; then
+		
+		if [ "$(tc qdisc show dev ${DEV} root 2>&1 | awk -F':| ' 'NR==1{print $3}')" != "0" ]; then
+			
+			tc qdisc list dev ${DEV} 2>&1 | awk '$1=="qdisc"&&$4=="parent"{print $5}' | sort -t: -k1nr,2nr | while read -r parent; do
+				
+				${TC} qdisc del dev ${DEV} parent ${parent}
+				
+			done
+			
+			${TC} qdisc del dev ${DEV} root
+			
+		fi
+		
+		${IP} link set dev ${DEV} down
+		
+		${IP} link delete ${DEV} type ifb
+		
+	fi
+	
+	if [ -n "$(tc qdisc show dev ${IFACE} ingress 2>&1 | awk '{print $2}')" ]; then
+		
+		${TC} qdisc del dev ${IFACE} ingress
+		
+	fi
+	
+	return 0
+	
+}
 
-    case ${CURECN} in
-
-        ECN)
-
-            case $QDISC in
-
-                *codel|*pie|*red)
-
-                    CURECN=ecn
-
-                    ;;
-
-                *)
-
-                    CURECN=""
-
-                    ;;
-
-            esac
-
-            ;;
-
-        NOECN)
-
-            case $QDISC in
-
-                *codel|*pie|*red)
-
-                    CURECN=""
-
-                    ;;
-
-                *)
-
-                    CURECN=""
-
-                    ;;
-
-            esac
-
-            ;;
-
-        *)
-
-            sqm_warn "ecn value $1 not handled"
-
-            ;;
-
-    esac
-
-    sqm_debug "get_ECN: $1 CURECN: ${CURECN} IECN: ${IECN} EECN: ${EECN}"
-
-    echo ${CURECN}
-
+get_nss_ecn() {
+	
+	CURECN=$1
+	
+	case ${CURECN} in
+		
+		ECN)
+			
+			case $QDISC in
+				
+				*codel|*pie|*red)
+					
+					CURECN=ecn
+					
+					;;
+				
+				*)
+					
+					CURECN=""
+					
+					;;
+				
+			esac
+			
+			;;
+			
+		NOECN)
+			
+			case $QDISC in
+				
+				*codel|*pie|*red)
+					
+					CURECN=""
+					
+					;;
+				
+				*)
+					
+					CURECN=""
+					
+					;;
+				
+			esac
+			
+				;;
+			
+		*)
+			
+			sqm_warn "ecn value $1 not handled"
+			
+			;;
+		
+	esac
+	
+	sqm_debug "get_ECN: $1 CURECN: ${CURECN} IECN: ${IECN} EECN: ${EECN}"
+	
+	echo ${CURECN}
+	
 }
 
 egress() {
-
-    sleep 30s
-
-    sqm_debug "egress"
- 
-    EGRESSQDISCSTATE=$(tc qdisc show dev ${IFACE} root 2>&1 | awk 'NR==1{print}' | cut -d' ' -f3 )
-
-    if [ ${EGRESSQDISCSTATE} != "0:" ]; then
-      
-      ${TC} qdisc del dev ${IFACE} root
-      
-    fi
-
-    MTU=$(get_mtu ${IFACE})
-
-    BURST="$(get_burst ${MTU:-1514} ${UPLINK} ${ESHAPER_BURST_DUR_US})"
-
-    BURST=${BURST:-1514}
-
-    UPLINK100=`expr ${UPLINK} / 10`
-
-    UPLINK200=`expr ${UPLINK} / 10 \* 4`
-
-    BURST100=`expr ${BURST} / 10`
-
-    if [ ${BURST100} -lt 1514 ]; then
-      
-      BURST100=1514
-      
-    fi
-
-    BURST200=`expr ${BURST} / 10 \* 3`
-
-    if [ ${BURST200} -lt 1514 ]; then
-      
-      BURST200=1514
-      
-    fi
-
-    ${TC} qdisc add dev ${IFACE} root handle 1: nsstbl rate ${UPLINK}kbit burst ${BURST} mtu ${MTU} accel_mode 0
-
-    #${TC} qdisc add dev ${IFACE} parent 1: handle 10: nssfq_codel `get_limit ${ELIMIT}` `get_flows ${UPLINK}` `get_target "${ETARGET}" ${UPLINK}` quantum 1514 set_default accel_mode 0
-
-    ${TC} qdisc add dev ${IFACE} parent 1: handle 10: nssprio bands 3 accel_mode 0
-
-    ${TC} qdisc add dev ${IFACE} parent 10:1 handle 100: nsstbl rate ${UPLINK100}kbit burst ${BURST100} accel_mode 0
-
-    ${TC} qdisc add dev ${IFACE} parent 100: handle 1000: nsspfifo limit 100 accel_mode 0
-
-    ${TC} qdisc add dev ${IFACE} parent 10:2 handle 200: nsstbl rate ${UPLINK200}kbit burst ${BURST200} accel_mode 0
-
-    ${TC} qdisc add dev ${IFACE} parent 200: handle 2000: nssred limit 100k min 30k max 80k avpkt 1k burst 55 `get_rightecn ${EECN}` probability 0.50 accel_mode 0
-
-    ${TC} qdisc add dev ${IFACE} parent 10:3 handle 300: nssfq_codel `get_limit ${ELIMIT}` `get_flows ${UPLINK}` `get_target "${ETARGET}" ${UPLINK}` quantum 1514 set_default accel_mode 0
-
-    return 0
-
+	
+	sleep 30s
+	
+	sqm_debug "egress: Start"
+	
+	local UPLINK100
+	
+	local UPLINK200
+	
+	local EBURST100
+	
+	local EBURST200
+	
+	MTU=$(get_mtu ${IFACE})
+	
+	BURSTE="$(get_burst ${MTU:-1500} ${UPLINK} ${ESHAPER_BURST_DUR_US})"
+	
+	BURSTE=${BURSTE:-1749}
+	
+	UPLINK100=$((UPLINK/200))
+	
+	UPLINK200=$((UPLINK/20))
+	
+	EBURST100="$(get_burst ${MTU:-1500} ${UPLINK100} ${ESHAPER_BURST_DUR_US})"
+	
+	EBURST100=${EBURST100:-1749}
+	
+	EBURST200="$(get_burst ${MTU:-1500} ${UPLINK200} ${ESHAPER_BURST_DUR_US})"
+	
+	EBURST200=${EBURST200:-1749}
+	
+	${TC} qdisc add dev ${IFACE} root handle 1: nsstbl rate ${UPLINK}kbit burst ${BURSTE} mtu ${MTU} accel_mode 0
+	
+	${TC} qdisc add dev ${IFACE} parent 1: handle 10: nssprio bands 3 accel_mode 0
+	
+	${TC} qdisc add dev ${IFACE} parent 10:1 handle 100: nsstbl rate ${UPLINK100}kbit burst ${EBURST100} accel_mode 0
+	
+	${TC} qdisc add dev ${IFACE} parent 100: handle 1000: nsspfifo limit 100 accel_mode 0
+	
+	${TC} qdisc add dev ${IFACE} parent 10:2 handle 200: nsstbl rate ${UPLINK200}kbit burst ${EBURST200} accel_mode 0
+	
+	${TC} qdisc add dev ${IFACE} parent 200: handle 2000: nssred limit 100k min 30k max 80k avpkt 1k burst 55 `get_nss_ecn ${EECN}` probability 0.50 accel_mode 0
+	
+	${TC} qdisc add dev ${IFACE} parent 10:3 handle 300: nssfq_codel `get_limit ${ELIMIT}` `get_flows ${UPLINK}` `get_target "${ETARGET}" ${UPLINK}` quantum 1514 set_default accel_mode 0
+	
+	return 0
+	
 }
 
 ingress() {
 
-    sqm_debug "ingress"
+	sqm_debug "ingress: Start"
 
-    INGRESSLINKSTATE=$(ip link show ${DEV} 2>&1 | awk 'NR==1{print}' | cut -d' ' -f1)
-
-    INGRESSHANDLESTATE=$(tc qdisc show dev ${IFACE} 2>&1 | grep ingress | awk 'NR==1{print}' | cut -d' ' -f1)
-
-    if [ -n "${INGRESSHANDLESTATE}" ]; then
-      
-      ${TC} qdisc del dev ${IFACE} ingress
-      
-    fi
-
-    if [ ${INGRESSLINKSTATE} != "Device" ]; then
-      
-      INGRESSQDISCSTATE=$(tc qdisc show dev ${DEV} root 2>&1 | awk 'NR==1{print}' | cut -d' ' -f1)
-      
-      if [ ${INGRESSQDISCSTATE} != "Cannot" ]; then
-        
-        ${TC} qdisc del dev ${DEV} root
-        
-      fi
-      
-      ${IP} link set dev ${DEV} down
-      
-      ${IP} link delete ${DEV} type ifb
-      
-    fi
-
-    MTU=$(get_mtu $IFACE)
-
-    BURST="$(get_burst ${MTU:-1514} ${DOWNLINK} ${ISHAPER_BURST_DUR_US})"
-
-    BURST=${BURST:-1514}
-
-    DOWNLINK100=`expr ${DOWNLINK} / 10`
-
-    DOWNLINK200=`expr ${DOWNLINK} / 10 \* 4`
-
-    BURST100=`expr ${BURST} / 10`
-
-    if [ ${BURST100} -lt 1514 ]; then
-      
-      BURST100=1514
-      
-    fi
-
-    BURST200=`expr ${BURST} / 10 \* 3`
-
-    if [ ${BURST200} -lt 1514 ]; then
-      
-      BURST200=1514
-      
-    fi
-
-    ${IP} link add name ${DEV} type ifb
-
-    ${IP} link set dev ${DEV} up
-
-    ${TC} qdisc add dev ${IFACE} handle ffff: ingress
-
-    ${TC} filter add dev ${IFACE} parent ffff: protocol all u32 match u32 0 0 action nssmirred redirect dev ${DEV} fromdev ${IFACE}
-
-    ${TC} qdisc add dev ${DEV} root handle 1: nsstbl rate ${DOWNLINK}kbit burst ${BURST} mtu ${MTU} accel_mode 0
-
-    #${TC} qdisc add dev ${DEV} parent 1: handle 10: nssfq_codel `get_limit ${ILIMIT}` `get_flows ${DOWNLINK}` `get_target "${ITARGET}" ${DOWNLINK}` quantum 1514 set_default accel_mode 0
-
-    ${TC} qdisc add dev  ${DEV} parent 1: handle 10: nssprio bands 3 accel_mode 0
-
-    ${TC} qdisc add dev  ${DEV} parent 10:1 handle 100: nsstbl rate ${DOWNLINK100}kbit burst ${BURST100} accel_mode 0
-
-    ${TC} qdisc add dev  ${DEV} parent 100: handle 1000: nsspfifo limit 100 accel_mode 0
-
-    ${TC} qdisc add dev  ${DEV} parent 10:2 handle 200: nsstbl rate ${DOWNLINK200}kbit burst ${BURST200} accel_mode 0
-
-    ${TC} qdisc add dev  ${DEV} parent 200: handle 2000: nssred limit 100k min 30k max 80k avpkt 1k burst 55 `get_rightecn ${IECN}` probability 0.50 accel_mode 0
-
-    ${TC} qdisc add dev  ${DEV} parent 10:3 handle 300: nssfq_codel `get_limit ${ILIMIT}` `get_flows ${DOWNLINK}` `get_target "${ITARGET}" ${DOWNLINK}` quantum 1514 set_default accel_mode 0
-
-    return 0
-
+	local DOWNLINK100
+	
+	local DOWNLINK200
+	
+	local IBURST100
+	
+	local IBURST200
+	
+	MTU=$(get_mtu $IFACE)
+	
+	BURSTI="$(get_burst ${MTU:-1500} ${DOWNLINK} ${ISHAPER_BURST_DUR_US})"
+	
+	BURSTI=${BURSTI:-1749}
+	
+	DOWNLINK100=$((DOWNLINK/200))
+	
+	DOWNLINK200=$((DOWNLINK/20))
+	
+	IBURST100="$(get_burst ${MTU:-1500} ${DOWNLINK100} ${ISHAPER_BURST_DUR_US})"
+	
+	IBURST100=${IBURST100:-1749}
+	
+	IBURST200="$(get_burst ${MTU:-1500} ${DOWNLINK200} ${ISHAPER_BURST_DUR_US})"
+	
+	IBURST200=${IBURST200:-1749}
+	
+	${IP} link add name ${DEV} type ifb
+	
+	${IP} link set dev ${DEV} up
+	
+	${TC} qdisc add dev ${IFACE} handle ffff: ingress
+	
+	${TC} filter add dev ${IFACE} parent ffff: protocol all u32 match u32 0 0 action nssmirred redirect dev ${DEV} fromdev ${IFACE}
+	
+	${TC} qdisc add dev ${DEV} root handle 1: nsstbl rate ${DOWNLINK}kbit burst ${BURSTI} mtu ${MTU} accel_mode 0
+	
+	${TC} qdisc add dev	${DEV} parent 1: handle 10: nssprio bands 3 accel_mode 0
+	
+	${TC} qdisc add dev	${DEV} parent 10:1 handle 100: nsstbl rate ${DOWNLINK100}kbit burst ${IBURST100} accel_mode 0
+	
+	${TC} qdisc add dev	${DEV} parent 100: handle 1000: nsspfifo limit 100 accel_mode 0
+	
+	${TC} qdisc add dev	${DEV} parent 10:2 handle 200: nsstbl rate ${DOWNLINK200}kbit burst ${IBURST200} accel_mode 0
+	
+	${TC} qdisc add dev	${DEV} parent 200: handle 2000: nssred limit 100k min 30k max 80k avpkt 1k burst 55 `get_nss_ecn ${IECN}` probability 0.50 accel_mode 0
+	
+	${TC} qdisc add dev	${DEV} parent 10:3 handle 300: nssfq_codel `get_limit ${ILIMIT}` `get_flows ${DOWNLINK}` `get_target "${ITARGET}" ${DOWNLINK}` quantum 1514 set_default accel_mode 0
+	
+	return 0
+	
 }
 
 sqm_prepare_script() {
+	
+	for module in qca_nss_qdisc act_nssmirred; do
+		
+		if [ ! -d /sys/module/$module ]; then
+			
+			sqm_log "sqm_prepare_script: loading required kernel module: $module"
+			
+			modprobe -v $module 2>> ${OUTPUT_TARGET} || {
+				
+				sqm_error "Kernel module: $module failed to load"
+				
+				return 1
+				
+			}
+			
+		fi
+		
+	done
+	
+	drop_egress_qdisc
+	
+	drop_ingress_qdisc
+	
+	return 0
+	
+}
 
-    sqm_debug "No need to prepare"
-
-    return 0
-
+sqm_start() {
+	
+	sqm_debug "sqm_start: Starting sqm_start from nss_tbf.qos"
+	
+	[ -n "$IFACE" ] || return
+	
+	# reset the iptables trace log
+	
+	ipt_log_restart
+	
+	# check_wan
+	
+	sqm_prepare_script
+	
+	if [ "${UPLINK}" -ne 0 ]; then
+		
+		CUR_DIRECTION="egress"
+		
+		if fn_exists egress && egress; then
+			
+			sqm_log "sqm_start: egress shaping activated"
+			
+		else
+			
+			sqm_warn "sqm_start: ${SCRIPT} lacks egress() function or exited with an error"
+			
+		fi
+		
+	else
+		
+		drop_egress_qdisc
+		
+		sqm_log "sqm_start: egress shaping deactivated"
+		
+	fi
+	
+	if [ "${DOWNLINK}" -ne 0 ]; then
+		
+		CUR_DIRECTION="ingress"
+		
+		if fn_exists ingress && ingress; then
+			
+			sqm_log "sqm_start: ingress shaping activated"
+			
+		else
+			
+			sqm_warn "sqm_start: ${SCRIPT} lacks ingress() function or exited with an error"
+			
+		fi
+		
+	else
+		
+		drop_ingress_qdisc
+		
+		sqm_log "sqm_start: ingress shaping deactivated"
+		
+	fi
+	
+	return 0
+	
 }
 
 sqm_stop() {
-
-    EGRESSQDISCSTATE=$(tc qdisc show dev ${IFACE} root 2>&1 | awk 'NR==1{print}' | cut -d' ' -f3 )
-
-    if [ ${EGRESSQDISCSTATE} != "0:" ]; then
-      
-      ${TC} qdisc del dev ${IFACE} root
-      
-    fi
-
-    INGRESSLINKSTATE=$(ip link show ${DEV} 2>&1 | awk 'NR==1{print}' | cut -d' ' -f1)
-
-    INGRESSHANDLESTATE=$(tc qdisc show dev ${IFACE} 2>&1 | grep ingress | awk 'NR==1{print}' | cut -d' ' -f1)
-
-    if [ -n "${INGRESSHANDLESTATE}" ]; then
-      
-      ${TC} qdisc del dev ${IFACE} ingress
-      
-    fi
-
-    if [ ${INGRESSLINKSTATE} != "Device" ]; then
-      
-      INGRESSQDISCSTATE=$(tc qdisc show dev ${DEV} root 2>&1 | awk 'NR==1{print}' | cut -d' ' -f1)
-      
-      if [ ${INGRESSQDISCSTATE} != "Cannot" ]; then
-        
-        ${TC} qdisc del dev ${DEV} root
-        
-      fi
-      
-      ${IP} link set dev ${DEV} down
-      
-      ${IP} link delete ${DEV} type ifb
-      
-    fi
-
-    return 0
-
+	
+	#for module in act_nssmirred qca_nss_qdisc act_mirred ifb; do
+		
+		#if [ -d /sys/module/$module ]; then
+			
+			#sqm_log "sqm_stop: Removing kernel module: $module"
+			
+			#rmmod $module 2>> ${OUTPUT_TARGET} || {
+			
+			#sqm_error "Failed to remove kernel module $module"
+			
+			#return 1
+			
+		#}
+	
+	#fi
+	
+	#done
+	
+	drop_egress_qdisc
+	
+	drop_ingress_qdisc
+	
+	return 0
+	
 }
